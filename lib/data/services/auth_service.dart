@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import '../models/api_response_model.dart';
 import '../models/user_model.dart';
 import '../../core/constants/api_constants.dart';
@@ -17,8 +18,6 @@ class AuthService {
 
   // ─────────────────────────────────────────────
   // POST /auth/register
-  // Body JSON: { name, username, password }
-  // Response: { data: { userId } }
   // ─────────────────────────────────────────────
   Future<ApiResponse<String>> register({
     required String name,
@@ -31,7 +30,6 @@ class AuthService {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'name': name, 'username': username, 'password': password}),
     );
-
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode == 200 || response.statusCode == 201) {
       final userId = (body['data'] as Map<String, dynamic>)['userId'] as String;
@@ -42,8 +40,6 @@ class AuthService {
 
   // ─────────────────────────────────────────────
   // POST /auth/login
-  // Body JSON: { username, password }
-  // Response: { data: { authToken, refreshToken } }
   // ─────────────────────────────────────────────
   Future<ApiResponse<Map<String, String>>> login({
     required String username,
@@ -55,7 +51,6 @@ class AuthService {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'username': username, 'password': password}),
     );
-
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode == 200) {
       final data = body['data'] as Map<String, dynamic>;
@@ -73,7 +68,6 @@ class AuthService {
 
   // ─────────────────────────────────────────────
   // POST /auth/logout
-  // Body JSON: { authToken }
   // ─────────────────────────────────────────────
   Future<ApiResponse<void>> logout({required String authToken}) async {
     final uri = Uri.parse('${ApiConstants.baseUrl}${ApiConstants.authLogout}');
@@ -82,7 +76,6 @@ class AuthService {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'authToken': authToken}),
     );
-
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode == 200) {
       return ApiResponse(success: true, message: body['message'] as String);
@@ -92,8 +85,6 @@ class AuthService {
 
   // ─────────────────────────────────────────────
   // POST /auth/refresh-token
-  // Body JSON: { authToken, refreshToken }
-  // Response: { data: { authToken, refreshToken } }
   // ─────────────────────────────────────────────
   Future<ApiResponse<Map<String, String>>> refreshToken({
     required String authToken,
@@ -105,7 +96,6 @@ class AuthService {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'authToken': authToken, 'refreshToken': refreshToken}),
     );
-
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode == 200) {
       final data = body['data'] as Map<String, dynamic>;
@@ -123,7 +113,6 @@ class AuthService {
 
   // ─────────────────────────────────────────────
   // GET /users/me
-  // Header: Authorization: Bearer <token>
   // ─────────────────────────────────────────────
   Future<ApiResponse<UserModel>> getMe({required String authToken}) async {
     final uri = Uri.parse('${ApiConstants.baseUrl}${ApiConstants.usersMe}');
@@ -131,7 +120,6 @@ class AuthService {
       uri,
       headers: {'Authorization': 'Bearer $authToken'},
     );
-
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode == 200) {
       final user = UserModel.fromJson(
@@ -144,8 +132,6 @@ class AuthService {
 
   // ─────────────────────────────────────────────
   // PUT /users/me
-  // Header: Authorization: Bearer <token>
-  // Body JSON: { name, username }
   // ─────────────────────────────────────────────
   Future<ApiResponse<void>> updateMe({
     required String authToken,
@@ -161,7 +147,6 @@ class AuthService {
       },
       body: jsonEncode({'name': name, 'username': username}),
     );
-
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode == 200) {
       return ApiResponse(success: true, message: body['message'] as String);
@@ -171,7 +156,6 @@ class AuthService {
 
   // ─────────────────────────────────────────────
   // PUT /users/me/password
-  // Body JSON: { password, newPassword }
   // ─────────────────────────────────────────────
   Future<ApiResponse<void>> updatePassword({
     required String authToken,
@@ -187,7 +171,6 @@ class AuthService {
       },
       body: jsonEncode({'password': currentPassword, 'newPassword': newPassword}),
     );
-
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode == 200) {
       return ApiResponse(success: true, message: body['message'] as String);
@@ -196,39 +179,74 @@ class AuthService {
   }
 
   // ─────────────────────────────────────────────
-  // PUT /users/me/photo
-  // Multipart form-data, field: file
-  // Mendukung Web (Uint8List) dan Mobile (File)
+  // PUT /users/me/photo  (multipart/form-data)
+  //
+  // ROOT CAUSE FIX:
+  // Versi lama: if (kIsWeb && imageBytes != null) → fromBytes
+  //             else if (imageFile != null)        → fromPath
+  //
+  // Masalah fromPath: tidak menyertakan Content-Type secara otomatis
+  // sehingga server menolak (400/415). Di Web, File tidak ada sama sekali.
+  //
+  // FIX: Selalu pakai fromBytes + contentType eksplisit di SEMUA platform.
+  //      Jika imageBytes null tapi imageFile ada, baca dulu dari file.
   // ─────────────────────────────────────────────
   Future<ApiResponse<void>> updatePhoto({
     required String authToken,
-    File? imageFile,            // Mobile (Android/iOS)
-    Uint8List? imageBytes,      // Web
+    File? imageFile,
+    Uint8List? imageBytes,
     String imageFilename = 'photo.jpg',
   }) async {
     final uri = Uri.parse('${ApiConstants.baseUrl}${ApiConstants.usersMePhoto}');
 
+    // Pastikan bytes tersedia — prioritas imageBytes, fallback baca dari File
+    Uint8List? bytes = imageBytes;
+    if (bytes == null && imageFile != null && !kIsWeb) {
+      bytes = await imageFile.readAsBytes();
+    }
+
+    if (bytes == null || bytes.isEmpty) {
+      return ApiResponse(success: false, message: 'Tidak ada gambar yang dipilih.');
+    }
+
+    // Deteksi MIME type dari ekstensi — wajib agar server tidak reject
+    final ext = imageFilename.split('.').last.toLowerCase();
+    final mimeType = switch (ext) {
+      'png'            => MediaType('image', 'png'),
+      'gif'            => MediaType('image', 'gif'),
+      'webp'           => MediaType('image', 'webp'),
+      'jpg' || 'jpeg'  => MediaType('image', 'jpeg'),
+      _                => MediaType('image', 'jpeg'),
+    };
+
     final request = http.MultipartRequest('PUT', uri)
-      ..headers['Authorization'] = 'Bearer $authToken';
+      ..headers['Authorization'] = 'Bearer $authToken'
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'file',           // nama field yang diharapkan server
+          bytes,
+          filename:    imageFilename,
+          contentType: mimeType,
+        ),
+      );
 
-    if (kIsWeb && imageBytes != null) {
-      request.files.add(http.MultipartFile.fromBytes(
-        'file', imageBytes, filename: imageFilename,
-      ));
-    } else if (imageFile != null) {
-      request.files.add(await http.MultipartFile.fromPath('file', imageFile.path));
+    try {
+      final streamed  = await request.send();
+      final response  = await http.Response.fromStream(streamed);
+      final body      = jsonDecode(response.body) as Map<String, dynamic>;
+
+      if (response.statusCode == 200) {
+        return ApiResponse(success: true, message: body['message'] as String);
+      }
+      return ApiResponse(
+        success: false,
+        message: body['message'] as String?
+            ?? 'Gagal memperbarui foto. (HTTP ${response.statusCode})',
+      );
+    } catch (e) {
+      return ApiResponse(success: false, message: 'Error upload foto: $e');
     }
-
-    final streamed = await request.send();
-    final response = await http.Response.fromStream(streamed);
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
-
-    if (response.statusCode == 200) {
-      return ApiResponse(success: true, message: body['message'] as String);
-    }
-    return ApiResponse(success: false, message: body['message'] as String? ?? 'Gagal memperbarui foto.');
   }
-
 
   void dispose() => _client.close();
 }

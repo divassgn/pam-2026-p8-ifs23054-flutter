@@ -37,8 +37,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _showNewPass    = false;
   bool _showConfPass   = false;
 
-  // ── Preview foto profil (sebelum di-upload) ──
+  // ── Preview foto profil lokal (MemoryImage) ──
   Uint8List? _previewImageBytes;
+  bool _uploadingPhoto = false;
 
   @override
   void initState() {
@@ -58,49 +59,66 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
-  // ── Foto Profil ─────────────────────
+  // ── Foto Profil ─────────────────────────────────────────────
   Future<void> _pickPhoto() async {
     final picker = ImagePicker();
 
     Future<void> pickFrom(ImageSource source) async {
       final picked = await picker.pickImage(
-          source: source, imageQuality: 80, maxWidth: 512);
+        source:       source,
+        imageQuality: 80,
+        maxWidth:     512,
+      );
       if (picked == null || !mounted) return;
 
-      // Baca bytes untuk preview (Image.memory) dan upload (Uint8List)
+      // Baca bytes DULU — dipakai untuk preview (MemoryImage) DAN upload
       final Uint8List bytes = await picked.readAsBytes();
+      if (bytes.isEmpty) {
+        if (mounted) {
+          showAppSnackBar(context,
+              message: 'Gagal membaca gambar.', type: SnackBarType.error);
+        }
+        return;
+      }
 
-      // Tampilkan preview lokal dulu
-      setState(() => _previewImageBytes = bytes);
+      // Tampilkan preview lokal segera
+      setState(() {
+        _previewImageBytes = bytes;
+        _uploadingPhoto    = true;
+      });
 
+      // Upload: kirim imageFile (mobile) + imageBytes (semua platform)
+      // auth_service.dart akan prioritaskan imageBytes via fromBytes
       final success = await context.read<AuthProvider>().updatePhoto(
         imageFile:     kIsWeb ? null : File(picked.path),
-        imageBytes:    bytes,       // Uint8List untuk semua platform
-        imageFilename: picked.name,
+        imageBytes:    bytes,
+        imageFilename: picked.name.isNotEmpty ? picked.name : 'photo.jpg',
       );
 
       if (!mounted) return;
 
-      if (success) {
-        // Hapus preview setelah berhasil (akan pakai URL dari server)
-        setState(() => _previewImageBytes = null);
-      }
+      setState(() => _uploadingPhoto = false);
 
-      showAppSnackBar(
-        context,
-        message: success
-            ? 'Foto profil diperbarui.'
-            : context.read<AuthProvider>().errorMessage,
-        type: success ? SnackBarType.success : SnackBarType.error,
-      );
+      if (success) {
+        // Berhasil → buang preview lokal, pakai URL dari server
+        setState(() => _previewImageBytes = null);
+        showAppSnackBar(context,
+            message: 'Foto profil diperbarui.', type: SnackBarType.success);
+      } else {
+        // Gagal → tetap tampilkan preview lokal, tunjukkan error
+        showAppSnackBar(context,
+            message: context.read<AuthProvider>().errorMessage,
+            type: SnackBarType.error);
+      }
     }
 
+    // Web: langsung ke gallery (tidak ada kamera di browser)
     if (kIsWeb) {
       await pickFrom(ImageSource.gallery);
       return;
     }
 
-    // Mobile: tampilkan pilihan galeri / kamera
+    // Mobile: pilih kamera atau galeri
     if (!mounted) return;
     showModalBottomSheet(
       context: context,
@@ -112,8 +130,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 40,
-              height: 4,
+              width: 40, height: 4,
               margin: const EdgeInsets.symmetric(vertical: 12),
               decoration: BoxDecoration(
                 color: Colors.grey[300],
@@ -123,18 +140,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ListTile(
               leading: const Icon(Icons.photo_library_outlined),
               title: const Text('Pilih dari Galeri'),
-              onTap: () {
-                Navigator.pop(ctx);
-                pickFrom(ImageSource.gallery);
-              },
+              onTap: () { Navigator.pop(ctx); pickFrom(ImageSource.gallery); },
             ),
             ListTile(
               leading: const Icon(Icons.camera_alt_outlined),
               title: const Text('Ambil Foto'),
-              onTap: () {
-                Navigator.pop(ctx);
-                pickFrom(ImageSource.camera);
-              },
+              onTap: () { Navigator.pop(ctx); pickFrom(ImageSource.camera); },
             ),
             const SizedBox(height: 8),
           ],
@@ -246,18 +257,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ── Avatar Section ──
+
+          // ── Avatar Section ───────────────────────────────────────
           Center(
             child: Column(
               children: [
+                // Avatar dengan overlay loading saat upload
                 GestureDetector(
-                  onTap: _pickPhoto,
+                  onTap: _uploadingPhoto ? null : _pickPhoto,
                   child: Stack(
+                    alignment: Alignment.center,
                     children: [
+                      // ── Lingkaran avatar utama ──
                       CircleAvatar(
                         radius: 54,
                         backgroundColor: colorScheme.primaryContainer,
-                        // Prioritas: preview bytes lokal > URL server > inisial
+                        // Prioritas: (1) preview lokal → (2) URL server → (3) inisial+icon
                         backgroundImage: _previewImageBytes != null
                             ? MemoryImage(_previewImageBytes!)
                             : (user?.urlPhoto != null
@@ -266,33 +281,45 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         as ImageProvider?,
                         child: (_previewImageBytes == null &&
                             user?.urlPhoto == null)
-                            ? Text(
-                          (user?.name.isNotEmpty == true)
-                              ? user!.name[0].toUpperCase()
-                              : '?',
-                          style: TextStyle(
-                            fontSize: 36,
-                            color: colorScheme.primary,
-                            fontWeight: FontWeight.bold,
-                          ),
+                            ? _TodoAvatarPlaceholder(
+                          name: user?.name ?? '',
+                          color: colorScheme.primary,
                         )
                             : null,
                       ),
-                      Positioned(
-                        bottom: 0,
-                        right: 0,
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
+
+                      // ── Overlay loading saat upload ──
+                      if (_uploadingPhoto)
+                        Container(
+                          width: 108, height: 108,
                           decoration: BoxDecoration(
-                            color: colorScheme.primary,
                             shape: BoxShape.circle,
-                            border: Border.all(
-                                color: colorScheme.surface, width: 2),
+                            color: Colors.black.withOpacity(0.4),
                           ),
-                          child: Icon(Icons.camera_alt,
-                              size: 16, color: colorScheme.onPrimary),
+                          child: const Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 3,
+                            ),
+                          ),
                         ),
-                      ),
+
+                      // ── Tombol kamera di sudut kanan bawah ──
+                      if (!_uploadingPhoto)
+                        Positioned(
+                          bottom: 0, right: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: colorScheme.primary,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                  color: colorScheme.surface, width: 2),
+                            ),
+                            child: Icon(Icons.add_a_photo_rounded,
+                                size: 16, color: colorScheme.onPrimary),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -310,15 +337,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     color: colorScheme.onSurfaceVariant,
                   ),
                 ),
+                const SizedBox(height: 4),
+                // Label tap untuk ganti foto
+                if (!_uploadingPhoto)
+                  GestureDetector(
+                    onTap: _pickPhoto,
+                    child: Text(
+                      'Ketuk foto untuk mengubah',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: colorScheme.primary,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
           const SizedBox(height: 32),
 
-          // ── Edit Profil ──
+          // ── Edit Profil ──────────────────────────────────────────
           _SectionCard(
             title: 'Edit Profil',
-            icon: Icons.person_outline,
+            icon: Icons.manage_accounts_outlined,
             child: Form(
               key: _profileFormKey,
               child: Column(
@@ -350,14 +390,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed:
-                      _profileLoading ? null : _submitProfile,
+                      onPressed: _profileLoading ? null : _submitProfile,
                       icon: _profileLoading
                           ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2))
+                          width: 18, height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
                           : const Icon(Icons.save_outlined),
                       label: Text(_profileLoading
                           ? 'Menyimpan...'
@@ -370,7 +407,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           const SizedBox(height: 16),
 
-          // ── Ganti Kata Sandi ──
+          // ── Ganti Kata Sandi ─────────────────────────────────────
           _SectionCard(
             title: 'Ganti Kata Sandi',
             icon: Icons.lock_outline,
@@ -395,8 +432,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     show: _showNewPass,
                     onToggle: () =>
                         setState(() => _showNewPass = !_showNewPass),
-                    validator: (v) =>
-                    (v == null || v.trim().length < 6)
+                    validator: (v) => (v == null || v.trim().length < 6)
                         ? 'Minimal 6 karakter.'
                         : null,
                   ),
@@ -418,11 +454,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       onPressed: _passLoading ? null : _submitPassword,
                       icon: _passLoading
                           ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2))
-                          : const Icon(Icons.key),
+                          width: 18, height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.key_rounded),
                       label: Text(_passLoading
                           ? 'Mengubah...'
                           : 'Ganti Kata Sandi'),
@@ -436,6 +470,43 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ],
       ),
     );
+  }
+}
+
+// ── Avatar Placeholder bertema Todo ────────────────────────────
+// Mengganti icon Flutter default dengan ikon checklist todo
+class _TodoAvatarPlaceholder extends StatelessWidget {
+  const _TodoAvatarPlaceholder({
+    required this.name,
+    required this.color,
+  });
+
+  final String name;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    // Jika ada nama, tampilkan inisial + ikon kecil todo di bawah
+    if (name.isNotEmpty) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            name[0].toUpperCase(),
+            style: TextStyle(
+              fontSize: 34,
+              color: color,
+              fontWeight: FontWeight.bold,
+              height: 1,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Icon(Icons.checklist_rounded, size: 14, color: color.withOpacity(0.6)),
+        ],
+      );
+    }
+    // Belum ada nama → tampilkan ikon todo saja
+    return Icon(Icons.checklist_rounded, size: 40, color: color);
   }
 }
 
@@ -469,8 +540,7 @@ class _SectionCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(icon,
-                    color: Theme.of(context).colorScheme.primary),
+                Icon(icon, color: Theme.of(context).colorScheme.primary),
                 const SizedBox(width: 8),
                 Text(
                   title,

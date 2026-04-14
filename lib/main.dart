@@ -31,6 +31,10 @@ class DelcomTodosApp extends StatefulWidget {
 class _DelcomTodosAppState extends State<DelcomTodosApp> {
   late final _router = buildRouter(context);
 
+  // Warna seed biru muda — dipakai SAMA untuk light & dark
+  // sehingga identitas warna aplikasi konsisten di kedua mode.
+  static const Color _seedColor = Color(0xFF29B6F6); // Light Blue 400
+
   @override
   Widget build(BuildContext context) {
     final themeMode = context.watch<ThemeProvider>().themeMode;
@@ -39,20 +43,27 @@ class _DelcomTodosAppState extends State<DelcomTodosApp> {
       title: 'Delcom Todos',
       debugShowCheckedModeBanner: false,
       themeMode: themeMode,
+
+      // ── Light Theme ─────────────────────────────────
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2196F3),
+          seedColor: _seedColor,
           brightness: Brightness.light,
         ),
         useMaterial3: true,
       ),
+
+      // ── Dark Theme ──────────────────────────────────
+      // Sama-sama pakai _seedColor agar warna biru muda
+      // tetap konsisten saat mode gelap diaktifkan.
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF4CAF50),
+          seedColor: _seedColor,
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
       ),
+
       routerConfig: _router,
     );
   }
