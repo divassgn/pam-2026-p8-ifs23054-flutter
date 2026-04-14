@@ -1,6 +1,6 @@
 # pam_p8_2026_ifs23054
 
-Menampilkan berbagai daftar Skincare
+Menampilkan daftar todos
 
 ## Getting Started
 
